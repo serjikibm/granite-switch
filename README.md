@@ -1,7 +1,7 @@
 # Granite Switch — Build AI models like you build software
 
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://github.com/generative-computing/granite-switch/blob/main/LICENSE)
-[![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![corelib](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fhuggingface.co%2Fapi%2Fmodels%2Fibm-granite%2Fgranitelib-core-r1.0%3Fexpand%255B%255D%3DdownloadsAllTime&query=%24.downloadsAllTime&label=corelib&logo=huggingface&color=yellow)](https://huggingface.co/ibm-granite/granitelib-core-r1.0)
 [![raglib](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fhuggingface.co%2Fapi%2Fmodels%2Fibm-granite%2Fgranitelib-rag-r1.0%3Fexpand%255B%255D%3DdownloadsAllTime&query=%24.downloadsAllTime&label=raglib&logo=huggingface&color=yellow)](https://huggingface.co/ibm-granite/granitelib-rag-r1.0)
 [![guardianlib](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fhuggingface.co%2Fapi%2Fmodels%2Fibm-granite%2Fgranitelib-guardian-r1.0%3Fexpand%255B%255D%3DdownloadsAllTime&query=%24.downloadsAllTime&label=guardianlib&logo=huggingface&color=yellow)](https://huggingface.co/ibm-granite/granitelib-guardian-r1.0)
@@ -47,18 +47,19 @@ Other install options depending on your use case:
 ```bash
 pip install "granite-switch[compose]"   # Compose modular models
 pip install "granite-switch[hf]"        # HuggingFace inference
-pip install "granite-switch[dev]"       # Everything
+pip install "granite-switch[hf,vllm,compose]"   # All of the above
 ```
 
-Requires Python 3.11+ and PyTorch 2.11+.
+Requires Python 3.11–3.13 and PyTorch 2.11+. The vLLM backend needs an NVIDIA GPU with CUDA 13+;
+composing and HuggingFace inference also run on CPU.
 
-> **vLLM version note:** `[vllm]` accepts any line from `0.26.x` to `0.30.x`. The floor is
-> `transformers>=5.16`: `0.26` is the earliest vLLM whose model code handles the
-> transformers-5.13+ `full_attention` layer-type rename. One tree serves all five lines —
-> where their APIs differ, the backend checks for the capability rather than the version. All
-> of them require PyTorch 2.11+ (CUDA 13+). To pin a single line for development, use the
-> `vllm26` / `vllm30` dependency *groups* — the two ends of the range, which is also what CI
-> tests on every GPU run.
+> **vLLM version note:** `[vllm]` accepts any vLLM line from `0.26.x` to `0.30.x`. The floor is
+> `0.26` because Granite Switch requires `transformers>=5.16`, and `0.26` is the earliest vLLM
+> whose model code handles the transformers-5.13+ `full_attention` layer-type rename. Where the
+> vLLM lines' APIs differ, the backend checks for the capability rather than the version.
+> Contributors can pin a single vLLM line with the `uv` dependency groups in `pyproject.toml`
+> (e.g. `uv sync --group dev` for 0.26, `--group dev-latest` for 0.30); see
+> [CONTRIBUTING.md](https://github.com/generative-computing/granite-switch/blob/main/CONTRIBUTING.md) for dev setup.
 
 ### Compose a Model
 
@@ -67,7 +68,7 @@ Compose a base Granite model with adapter libraries into a single deployable che
 ```bash
 python -m granite_switch.composer.compose_granite_switch \
   --base-model ibm-granite/granite-4.1-3b \
-  --adapters ibm-granite/granitelib-core-r1.0 ibm-granite/granitelib-rag-r1.0  ibm-granite/granitelib-guardian-r1.0 \
+  --adapters ibm-granite/granitelib-core-r1.0 ibm-granite/granitelib-rag-r1.0 ibm-granite/granitelib-guardian-r1.0 \
   --output ./my-model
 ```
 
@@ -86,16 +87,15 @@ This downloads the base model, embeds compatible LoRA adapters (with a preferenc
 > **Tip: pre-download the model for faster startup.** The first run will download several GB from Hugging Face, which can be slow. To download in advance using the fast transfer backend:
 > ```bash
 > pip install "huggingface_hub[hf_transfer]"
-> huggingface-cli login                          # one-time, if not already logged in
+> hf auth login                                  # one-time, if not already logged in
 > HF_HUB_ENABLE_HF_TRANSFER=1 hf download ibm-granite/granite-switch-4.1-3b-preview
 > ```
 > Subsequent runs will use the local cache automatically.
 
 **vLLM + Mellea (recommended):**
 
-
 ```bash
-pip install mellea
+pip install mellea   # or: pip install "granite-switch[tutorials]" for the pinned, tested Mellea version
 python -m vllm.entrypoints.openai.api_server --model ibm-granite/granite-switch-4.1-3b-preview --port 8000
 ```
 
@@ -118,15 +118,56 @@ print(f"social_bias score: {score:.3f}")
 # => social_bias score: 0.964
 ```
 
+**vLLM + any OpenAI-compatible client (no Mellea):** select an adapter function by name through
+`chat_template_kwargs`, and the model's chat template places its control token for you:
+
+```bash
+curl http://localhost:8000/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "ibm-granite/granite-switch-4.1-3b-preview",
+    "messages": [
+      {"role": "user", "content": "What is the capital of France?"},
+      {"role": "assistant", "content": "Paris is the capital of France."}
+    ],
+    "chat_template_kwargs": {"adapter_name": "uncertainty"},
+    "max_completion_tokens": 100
+  }'
+```
+
+Omit `adapter_name` to get the base model. Without Mellea you get the adapter function's raw text
+output, with no schema enforcement.
+
+**HuggingFace (prototyping, CPU or GPU):** the same checkpoint loads with `transformers` and
+takes `adapter_name=` in `apply_chat_template`. See the
+[HuggingFace notebook](https://github.com/generative-computing/granite-switch/blob/main/tutorials/notebooks/granite_switch_with_hf.ipynb).
+
 ## How It Works
 
 With standard LoRA, each adapter is trained against its own KV distribution — so switching adapter functions across complex flow control means discarding and recomputing the KV cache at every step. aLoRA adapter functions are instead trained against a common normalized KV cache, so they can all coexist in a single checkpoint and activate on demand without cross-contamination:
 
-1. **Control tokens** — Each adapter function has a dedicated control token (e.g., `<guardian>`, `<query_rewrite>`). Placing the token in the input sequence is what triggers activation — the adapter function's LoRA weights apply from that position forward.
-2. **KV cache normalization** — Because all adapter functions are trained against the same normalized KV cache, they never interfere with each other's internal state. Each activates on top of the shared base KV cache, which is what makes independent development, benchmarking, and composition possible without joint training.
-3. **Prefill reuse** — LoRA weights are selected per token position, not per request. Because all adapter functions share the same normalized KV cache, the prefill from earlier steps is reused rather than recomputed — eliminating the main latency cost of multi-adapter complex flow control.
+1. **Control tokens** — Each adapter function has a dedicated control token (e.g., `<|guardian-core|>`, `<|query_rewrite|>`). Placing the token in the input sequence is what triggers activation — the adapter function's LoRA weights apply from that position forward. The composed chat template places the token for you when you pass `adapter_name`.
+2. **KV cache normalization** — Because all aLoRA adapter functions are trained against the same normalized KV cache, they never interfere with each other's internal state. Each activates on top of the shared base KV cache, which is what makes independent development, benchmarking, and composition possible without joint training.
+3. **Prefill reuse** — LoRA weights are selected per token position, not per request. Because all aLoRA adapter functions share the same normalized KV cache, the prefill from earlier steps is reused rather than recomputed — eliminating the main latency cost of multi-adapter complex flow control.
+4. **MultiSwitch routing** — Inside the model, a small constructed (not trained) routing module reads the control tokens seen so far and picks the active adapter function for every token; the latest control token wins. A single request can therefore switch adapter functions any number of times, and — when composed with `--base-reset-token` — return to the base model with `<|base_reset|>`. See [MultiSwitch explained](https://github.com/generative-computing/granite-switch/blob/main/docs/MULTISWITCH_EXPLAINED.md).
+
+Standard LoRA adapters are supported too. Their control token goes at the start of the sequence, so they apply to the whole input and don't share the base KV cache — which is why the composer prefers the aLoRA variant when a library offers both.
 
 Like functions in a software library, adapter functions can be developed and benchmarked independently or jointly. They compose into one deployable model that contains all capabilities, in analogy to statically linked object code.
+
+## Supported Models and Features
+
+- **Base models** — Granite 4.0 and 4.1 dense, Granite 4.2 dense (ChatML template), and pure sparse-MoE Granite (`granitemoe`) bases. See [Supported models](https://github.com/generative-computing/granite-switch/blob/main/docs/SUPPORTED_MODELS.md).
+- **Adapter technologies** — aLoRA, LoRA, and Shadow Residual (a dual-stream adaptation; a checkpoint holds either Shadow Residual adapters or LoRA/aLoRA adapters, not both). See [Shadow Residual architecture](https://github.com/generative-computing/granite-switch/blob/main/docs/SR_ARCHITECTURE.md).
+- **Fast vLLM kernels** — a fused SWITCH Triton kernel replaces vLLM's Punica LoRA path. See [SWITCH kernels](https://github.com/generative-computing/granite-switch/blob/main/docs/SWITCH_KERNELS.md).
+- **Audio input (alpha)** — speech input through an ASR cascade. See [Audio](https://github.com/generative-computing/granite-switch/blob/main/docs/AUDIO.md).
+
+### Known Limitations
+
+- **vLLM: at most 188 control tokens per sequence.** In bf16, the vLLM routing head can count only 188 control tokens in one sequence. The multi-turn `Conversation` helper handles longer conversations by re-prefilling the turn, but raw `/v1/completions` requests are not guarded.
+- **vLLM: `--kv-cache-dtype fp8` is not supported** by the routing heads.
+
+Details are in section 8 of [MultiSwitch explained](https://github.com/generative-computing/granite-switch/blob/main/docs/MULTISWITCH_EXPLAINED.md).
 
 ## Tutorials
 
@@ -137,8 +178,10 @@ New here? Start with a 5-minute notebook and work your way up:
 | [Hello Mellea](https://colab.research.google.com/github/generative-computing/granite-switch/blob/main/tutorials/notebooks/hello_mellea.ipynb) | Call adapters through a clean Python API | 5 min | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/generative-computing/granite-switch/blob/main/tutorials/notebooks/hello_mellea.ipynb) |
 | [RAG Flow](https://colab.research.google.com/github/generative-computing/granite-switch/blob/main/tutorials/notebooks/rag_flow.ipynb) | Query rewrite + answerability + citations in one model | 30 min | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/generative-computing/granite-switch/blob/main/tutorials/notebooks/rag_flow.ipynb) |
 | [Compose Your Own](https://colab.research.google.com/github/generative-computing/granite-switch/blob/main/tutorials/notebooks/compose_granite_switch.ipynb) | Build a custom checkpoint from adapter function libraries | 15 min | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/generative-computing/granite-switch/blob/main/tutorials/notebooks/compose_granite_switch.ipynb) |
+| [Hello MultiSwitch](https://colab.research.google.com/github/generative-computing/granite-switch/blob/main/tutorials/notebooks/hello_multiswitch.ipynb) | Route several adapter functions in one prompt, then multi-turn with `Conversation` | 10–40 min | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/generative-computing/granite-switch/blob/main/tutorials/notebooks/hello_multiswitch.ipynb) |
+| [HuggingFace Backend](https://colab.research.google.com/github/generative-computing/granite-switch/blob/main/tutorials/notebooks/granite_switch_with_hf.ipynb) | Compose and run with `transformers`, invoking adapter functions by name | 10 min | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/generative-computing/granite-switch/blob/main/tutorials/notebooks/granite_switch_with_hf.ipynb) |
 
-All notebooks run on Colab. See [tutorials/README.md](https://github.com/generative-computing/granite-switch/blob/main/tutorials/README.md) for the full list and guided learning paths.
+All notebooks run on Colab. See [tutorials/README.md](https://github.com/generative-computing/granite-switch/blob/main/tutorials/README.md) for the full list of 11 notebooks (including RAG 101, multi-turn MultiSwitch, vLLM serving, and a speech demo), guides, and guided learning paths.
 
 ## Ecosystem
 
